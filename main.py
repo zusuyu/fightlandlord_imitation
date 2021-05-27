@@ -16,11 +16,6 @@ from collections import OrderedDict
 
 
 
-
-
-
-# initializing Combo
-
 def getCardId(card):
     # 求一张牌的 id
     if card < 52:
@@ -131,14 +126,6 @@ def getComboMask(combo):
 
 
 
-
-
-
-
-
-
-# define class Game
-
 class Game(object):
     # 这里 0 始终是地主，1 始终是地主下家，2 始终是地主上家
 
@@ -185,31 +172,19 @@ class Game(object):
     
     def getMask2(self, player, combo, already_played):
         # 带翼的 mask，哪些翼是可以打的？
-        # mask 的大小是 28, 表示 15 种单牌和 13 种对子
-        # 指明 combo 后：(1)单牌/对子不能错 (2)少于1/2张的不能打 (3)和主体部分重复的不能打 (4)打过的不能打
-        mask = np.ones(28)
-        if combo[3] == 1:
-            mask[range(15, 28)] = 0
-            for i in range(13):
-                if self.hand[player][i] < 1:
+        # mask 的大小是 15 或者 13, 表示 15 种单牌和 13 种对子
+        # 指明 combo 后：(1)少于1/2张的不能打 (2)和主体部分重复的不能打 (3)打过的不能打
+        mask = np.ones(15 if combo[3] == 1 else 13)
+        for i in range(mask.shape[0]):
+                if self.hand[player][i] < combo[3]:
                     mask[i] = 0
-            mask[range(combo[1], combo[2] + 1)] = 0
-            for i in already_played:
-                mask[i] = 0
-        else:
-            assert combo[3] == 2
-            mask[range(0, 15)] = 0
-            for i in range(13):
-                if self.hand[player][i] < 2:
-                    mask[i + 15] = 0
-            mask[range(combo[1] + 15, combo[2] + 16)] = 0
-            for i in already_played:
-                mask[i + 15] = 0
+        mask[range(combo[1], combo[2] + 1)] = 0
+        mask[already_played] = 0
         return mask
     
     def getInput(self, player):
         # 返回两个网络的输入
-        # 这里包含五个部分：我自己的手牌数、对手的手牌数、我的顺子情况、三个人还剩多少张牌、我拥有牌型的 mask
+        # 这里包含五个部分：我自己每种牌的数量、对手每种牌的数量、我的顺子情况、三个人还剩多少张牌、我拥有牌型的 mask
         # size = 4 * 15 + 4 * 15 + 4 * 12 + 3 * 20 + 379
         p1 = (player + 1) % 3
         p2 = (player + 2) % 3
@@ -217,8 +192,8 @@ class Game(object):
         myhand = np.zeros((4, 15))
         othershand = np.zeros((4, 15))
         for i in range(4):
-            myhand[i, np.where(self.hand[player] >= i + 1)] = 1
-            othershand[i, np.where(self.hand[p1] + self.hand[p2] >= i + 1)] = 1
+            myhand[i, np.where(self.hand[player] == i + 1)] = 1
+            othershand[i, np.where(self.hand[p1] + self.hand[p2] == i + 1)] = 1
         
         mystraight = np.zeros((4, 12))
         for i in range(4):
@@ -232,13 +207,11 @@ class Game(object):
                 
         handcnt = np.zeros((3, 20))
         for player in range(3):
-            handcnt[player, range(np.sum(self.hand[player]))] = 1
+            handcnt[player, np.sum(self.hand[player]) - 1] = 1
 
         return np.concatenate([myhand.flatten(), othershand.flatten(), mystraight.flatten(), handcnt.flatten(), self.getPossessMask(player)])
     
 _input_size = 60 + 60 + 48 + 60 + combo_cnt
-
-
 
 
 
@@ -257,25 +230,23 @@ class MyModule(nn.Module):
         self.fc = nn.Sequential(OrderedDict([
                 ('fc1', nn.Linear(INPUT_SIZE, HIDDEN_SIZE)),
                 ('relu', nn.ReLU()),
-                ('bn', nn.BatchNorm1d(HIDDEN_SIZE)),
-                ('dropout', nn.Dropout(p = 0.1)),
-                ('fc2', nn.Linear(HIDDEN_SIZE, OUTPUT_SIZE)),
+                ('dropout', nn.Dropout(p = 0.2)),
+                ('fc2', nn.Linear(HIDDEN_SIZE, OUTPUT_SIZE))
             ]))
         
     def forward(self, x, m):
         return nn.LogSoftmax(dim = -1)(self.fc(x) * m)
     
     
-
-
-
-
-
-
-
-
-
-# main.py
+    
+    
+    
+    
+    
+    
+    
+    
+_BOTZONE_ONLINE = os.environ.get("USER", "") == "root"
 
 my_hand = []
 g = Game([[], [], []])
@@ -288,9 +259,11 @@ def BIDDING():
     print(json.dumps({
         "response": bid_val
     }))
+    if not _BOTZONE_ONLINE:
+        assert(0)
     exit()
 
-model_path = "./data/fightlandlord_model/"
+model_path = "./data/fightlandlord_model/" if _BOTZONE_ONLINE else "./model/"
 
 def PLAYING():
     def getFromHand(idx):
@@ -311,8 +284,8 @@ def PLAYING():
     if np.sum(mask) == 1:
         combo_id = np.argmax(mask)
     else:
-        combo_id = model(torch.from_numpy(g.getInput(my_pos)),
-                         torch.from_numpy(mask)).detach().numpy().argmax()
+        combo_id = model(torch.from_numpy(g.getInput(my_pos)).unsqueeze(0),
+                         torch.from_numpy(mask)).unsqueeze(0).detach().numpy().argmax()
     
     combo = combo_list[combo_id]
     for i in range(combo[1], combo[2] + 1):
@@ -321,8 +294,8 @@ def PLAYING():
     g.play(my_pos, to_play)
     
     if combo[3] != 0:
-        model_name = "best_model_for_" + str(my_pos) + "bywings.pt"
-        model = MyModule(_input_size, 28)
+        model_name = "best_model_for_" + str(combo[3] - 1) + "bywings.pt"
+        model = MyModule(_input_size, (15 if combo[3] == 1 else 13))
         model.load_state_dict(torch.load(model_path + model_name))
 
         cnt = (combo[2] - combo[1] + 1) * (1 if combo[0] == 3 else 2)
@@ -343,6 +316,8 @@ def PLAYING():
     print(json.dumps({
         "response": to_play
     }))
+    if not _BOTZONE_ONLINE:
+        assert 0
     exit()
     
 if __name__ == "__main__":
@@ -359,6 +334,7 @@ if __name__ == "__main__":
     
     for i in range(len(data["requests"])):
         request = data["requests"][i]
+        
         if "publiccard" in request:
             bot_pos = request["pos"]
             lord_pos = request["landlord"]
@@ -368,12 +344,13 @@ if __name__ == "__main__":
             if my_pos == 0:
                 my_hand.extend(request["publiccard"])
                 tmp[0] = my_hand
-                tmp[1], tmp[2] = others_hand[:17], others_hand[17:]
+                tmp[1], tmp[2] = others_hand[:17], others_hand[17:] # 随便分
             else:
                 tmp[my_pos] = my_hand
                 tmp[0] = others_hand[:20]
                 tmp[2 if my_pos == 1 else 1] = others_hand[20:]
             g = Game(tmp)
+            
         if "history" in request:
             history = request["history"]
             TODO = "playing"
@@ -388,7 +365,10 @@ if __name__ == "__main__":
             if i < len(data["requests"]) - 1:
                 cards = data["responses"][i]
                 g.play(my_pos, cards)
-    
+                for c in cards:
+                    my_hand.remove(c)
+                las_combo = (0, 0, 0, 0)
+        
     if TODO == "bidding":
         BIDDING()
     else:
