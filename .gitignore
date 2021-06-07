@@ -1,4 +1,3 @@
 .vscode/
-model/
 data*.pth
 .ipynb_checkpoints/
