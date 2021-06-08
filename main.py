@@ -3,11 +3,13 @@ import json
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 import torchvision.transforms as transforms
 from collections import OrderedDict
 
 
+_idx = 4
 
 
 
@@ -219,30 +221,33 @@ class Game(object):
         '''
         # 我手里有每种数值的牌多少张，对手还有每种数值的牌多少张没有出过
         Input = np.concatenate([np.array(self.hand[player]),
-                                np.array(self.hand[p1]) + np.array(self.hand[p2])])
+                                np.array(self.hand[p1]) + np.array(self.hand[p2])
+                            ])
         # 我们三个人各打过每个数值多少张牌，各还有多少张牌
         for p in range(3):
             Input = np.concatenate([Input,
-                                    np.array(self.initial_hand[p]) - np.array(self.hand[p]),
-                                    np.array([np.sum(self.hand[p])])
-                                   ])
+                                    np.array(self.initial_hand[p]) - np.array(self.hand[p])
+                                ])
         def getComboArray(combo):
             tmp = np.zeros(15)
             for i in range(combo[1], combo[2] + 1):
                 tmp[i] += combo[0]
             return tmp
         # 前两回合那两个人各出了什么牌型的牌（只记录主体）
-        for i in range(1, 3):
-            Input = np.concatenate([Input,
-                                    getComboArray(combos[(player + i) % 3])
-                                   ])
+        for k in range(1, 2):
+            for i in range(1, 3):
+                Input = np.concatenate([Input,
+                                        getComboArray(combos[(player + i) % 3][-k] if len(combos[(player + i) % 3]) >= k else (0, 0, 0, 0))
+                                    ])
         # 我还有的牌型
         Input = np.concatenate([Input, self.getPossessMask(player)])
         # 我的手牌的差分(12张可连顺的部分)
+        
         tmp = np.zeros(11)
         for i in range(11):
             tmp[i] = self.hand[player, i + 1] - self.hand[player, i]
         Input = np.concatenate([Input, tmp])
+        
         _input_size = Input.shape[0]
         return Input
 
@@ -256,23 +261,27 @@ class Game(object):
 
 
 
-
-HIDDEN_SIZE = 512
-torch.set_default_tensor_type(torch.DoubleTensor)
+HIDDEN_SIZE = 32
+HIDDEN_SIZE_FC = 512
 
 class MyModule(nn.Module):
     def __init__(self, INPUT_SIZE, OUTPUT_SIZE):
         super(MyModule, self).__init__()
-        self.fc = nn.Sequential(OrderedDict([
-                ('fc1', nn.Linear(INPUT_SIZE, HIDDEN_SIZE)),
-                ('relu', nn.ReLU()),
-#                ('bn', nn.BatchNorm1d(HIDDEN_SIZE)),
-                ('dropout', nn.Dropout(p = 0.2)),
-                ('fc2', nn.Linear(HIDDEN_SIZE, OUTPUT_SIZE))
-            ]))
+        self.fc = nn.Sequential(
+            nn.Linear(INPUT_SIZE, HIDDEN_SIZE_FC),
+            nn.Dropout(0.5),
+            nn.BatchNorm1d(HIDDEN_SIZE_FC),
+            nn.ReLU(),
+            nn.Linear(HIDDEN_SIZE_FC, HIDDEN_SIZE_FC),
+            nn.Dropout(0.5),
+            nn.BatchNorm1d(HIDDEN_SIZE_FC),
+            nn.ReLU(),
+            nn.Linear(HIDDEN_SIZE_FC, OUTPUT_SIZE)
+        )
         
-    def forward(self, x, m):
-        return self.fc(x) * m
+    def forward(self, x : torch.tensor, m : torch.tensor):
+        v = (F.softmax(self.fc(x), dim=-1) + 1e-5) * m
+        return v / v.sum(dim=-1).reshape((-1,1))
         
     
     
@@ -288,17 +297,8 @@ my_hand = []
 g = Game([[], [], []])
 my_pos = -1
 others = []
-combos = [(0, 0, 0, 0), (0, 0, 0, 0), (0, 0, 0, 0)]
+combos = [[(0, 0, 0, 0)], [(0, 0, 0, 0)], [(0, 0, 0, 0)]]
 las_combo = (0, 0, 0, 0)
-
-def BIDDING():
-    bid_val = 0
-    print(json.dumps({
-        "response": bid_val
-    }))
-    if not _BOTZONE_ONLINE:
-        assert(0)
-    exit()
 
 model_path = "./data/fightlandlord_model/" if _BOTZONE_ONLINE else "./model/"
 
@@ -312,7 +312,7 @@ def PLAYING():
     
     to_play = []
         
-    model_name = "best_model_for_" + str(my_pos) + "mainbody.pt"
+    model_name = "best_model_for_bot" + str(_idx) + "_player" + str(my_pos) + "_mainbody.pt"
     model = torch.load(model_path + model_name)
     
     mask = g.getMask1(my_pos, las_combo)
@@ -330,19 +330,18 @@ def PLAYING():
     g.play(my_pos, to_play)
     
     if combo[3] != 0:
-        model_name = "best_model_for_" + str(combo[3] - 1) + "bywings.pt"
+        model_name = "best_model_for_bot" + str(_idx) + "_" + str(combo[3] - 1) + "bywings.pt"
         model = torch.load(model_path + model_name)
 
         cnt = (combo[2] - combo[1] + 1) * (1 if combo[0] == 3 else 2)
         already_played = []
         for i in range(cnt):
-            wing_id = model(torch.from_numpy(g.getInput(my_pos, combos)),
-                            torch.from_numpy(g.getMask2(my_pos, combo, already_played))).detach().numpy().argmax()
+            wing_id = model(torch.from_numpy(g.getInput(my_pos, combos)).unsqueeze(0),
+                            torch.from_numpy(g.getMask2(my_pos, combo, already_played))).unsqueeze(0).detach().numpy().argmax()
             tmp = []
-            if wing_id < 15:
+            if combo[3] == 1:
                 tmp = [getFromHand(wing_id)]
             else:
-                wing_id -= 15
                 tmp = [getFromHand(wing_id), getFromHand(wing_id)]
             g.play(my_pos, tmp)
             to_play.extend(tmp)
@@ -362,51 +361,41 @@ if __name__ == "__main__":
     for i in range(54):
         if i not in my_hand:
             others_hand.append(i)
-
-    TODO = "bidding"
-    if "bid" in data["requests"][0]:
-        bid_list = data["requests"][0]["bid"]
+    if len(data["requests"][0]["history"][0]) != 0:
+        my_pos = 2
+    elif len(data["requests"][0]["history"][1]) != 0:
+        my_pos = 1
+    else:
+        my_pos = 0
+    others = [(my_pos + 1) % 3, (my_pos + 2) % 3]
+    tmp = [[], [], []]
+    if my_pos == 0:
+        tmp[0] = my_hand
+        tmp[1], tmp[2] = others_hand[:17], others_hand[17:]
+    else:
+        tmp[my_pos] = my_hand
+        tmp[0] = others_hand[:20]
+        tmp[3 - my_pos] = others_hand[20:]
+    g = Game(tmp)
     
     for i in range(len(data["requests"])):
-        request = data["requests"][i]
-        
-        if "publiccard" in request:
-            bot_pos = request["pos"]
-            lord_pos = request["landlord"]
-            my_pos = (bot_pos - lord_pos + 3) % 3
-            others = [(my_pos + 1) % 3, (my_pos + 2) % 3]
-            tmp = [[], [], []]
-            if my_pos == 0:
-                my_hand.extend(request["publiccard"])
-                tmp[0] = my_hand
-                tmp[1], tmp[2] = others_hand[:17], others_hand[17:] # 随便分
-            else:
-                tmp[my_pos] = my_hand
-                tmp[0] = others_hand[:20]
-                tmp[2 if my_pos == 1 else 1] = others_hand[20:]
-            g = Game(tmp)
-            
-        if "history" in request:
-            history = request["history"]
-            TODO = "playing"
-            for j in range(2):
-                p = others[j]
-                cards = history[j]
-                g.play(p, cards)
-                combos[p] = getCombo(cards)
+        history = data["requests"][i]["history"]
+        for j in range(2):
+            p = others[j]
+            cards = history[j]
+            g.play(p, cards)
+            combos[p].append(getCombo(cards))
 
-            if i < len(data["requests"]) - 1:
-                cards = data["responses"][i]
-                g.play(my_pos, cards)
-                for c in cards:
-                    my_hand.remove(c)
-                combos[my_pos] = getCombo(cards)
+        if i < len(data["requests"]) - 1:
+            cards = data["responses"][i]
+            g.play(my_pos, cards)
+            for c in cards:
+                my_hand.remove(c)
+            combos[my_pos].append(getCombo(cards))
     
+    las_combo = (0, 0, 0, 0)
     for i in range(1, 3):
-        if combos[(my_pos + i) % 3] != (0, 0, 0, 0):
-            las_combo = combos[(my_pos + i) % 3]
+        if combos[(my_pos + i) % 3][-1] != (0, 0, 0, 0):
+            las_combo = combos[(my_pos + i) % 3][-1]
 
-    if TODO == "bidding":
-        BIDDING()
-    else:
-        PLAYING()
+    PLAYING()
