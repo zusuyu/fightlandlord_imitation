@@ -9,7 +9,7 @@ import torchvision.transforms as transforms
 from collections import OrderedDict
 
 
-_idx = 4
+_idx = 2
 
 
 
@@ -313,7 +313,7 @@ def PLAYING():
     to_play = []
         
     model_name = "best_model_for_bot" + str(_idx) + "_player" + str(my_pos) + "_mainbody.pt"
-    model = torch.load(model_path + model_name)
+    model = torch.load(model_path + model_name, map_location = torch.device('cpu'))
     
     mask = g.getMask1(my_pos, las_combo)
     combo_id = -1
@@ -331,7 +331,7 @@ def PLAYING():
     
     if combo[3] != 0:
         model_name = "best_model_for_bot" + str(_idx) + "_" + str(combo[3] - 1) + "bywings.pt"
-        model = torch.load(model_path + model_name)
+        model = torch.load(model_path + model_name, map_location = torch.device('cpu'))
 
         cnt = (combo[2] - combo[1] + 1) * (1 if combo[0] == 3 else 2)
         already_played = []
